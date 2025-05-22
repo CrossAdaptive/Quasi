@@ -1,0 +1,66 @@
+
+. Downloads
+
+.. Command-line
+
+Distribution packages will be released soon.
+For now, simply invoke the following on your command line after downloading the '.c' file;
+then copy the resulting executable 'quasi' to a directory on your path.
+
+~
+cc -o quasi quasi-2.0.c
+~
+
+~html~      
+<table>
+    <thead>
+        <tr>
+            <th>Date   </th>
+            <th>Version</th>
+            <th>Link   </th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td>2023-01-26</td>
+            <td>3.0</td>
+            <td><a href='/resources/downloads/3.0/quasi.c'>Download quasi.c</a></td>
+        </tr>
+        <tr>
+            <td>???</td>
+            <td>2.0.1</td>
+            <td><a href='/resources/downloads/2.0.1/quasi.c'>Download quasi.c</a></td>
+        </tr>
+        <tr>
+            <td>???</td>
+            <td>2.0.0</td>
+            <td><a href='/resources/downloads/2.0.0/quasi.c'>Download quasi.c</a></td>
+        </tr>
+        <tr>
+            <td>???</td>
+            <td>1.0.7</td>
+            <td><a href='/resources/downloads/1.0.7/quasi.c'>Download quasi.c</a></td>
+        </tr>
+    </tbody>
+</table>
+~
+
+.. Quasi.php
+
+Download the Quasi.php file and place it in your PHP includes directory,
+or directly in your styles directory.
+Usaged is shown below.
+
+~
+$files  = QuasiFilesMatching( ".txt" ); // e.g., ["0-Frontmatter.txt", "1-Overview.txt", "2-Body.txt"]
+$output = Quasi( $files, ".js" );       // Only return Javascript files
+
+foreach ( $output as $path => $string )
+{
+    echo $string
+}
+~
+
+~html~
+<a href='/resources/downloads/2.0/Quasi.php.txt'>Download Quasi.php (v2.0)</a>
+~

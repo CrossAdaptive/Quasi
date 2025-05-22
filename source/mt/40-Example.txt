@@ -1,0 +1,603 @@
+!
+Copyright 2011, Daniel Robert Bradley
+This software is released under the terms of the GPLv3 
+
+This file is part of Quasi.
+
+Quasi is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+Quasi is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with Foobar.  If not, see <http://www.gnu.org/licenses/>.
+!
+
+. Implementation
+
+Quasi has now been reimplemented in pure C to maximise portability, allowing it to act as the foundation of an organisation's development tool set.
+
+~!c/main.c~
+/*   !!!   Warning generated from mtx source files   !!!   */
+~
+
+!
+~c/main.c~
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <ctype.h>
+#include <errno.h>
+#include <dirent.h>
+#include <libgen.h>
+#include <unistd.h>
+~
+!
+
+..		Invocation
+
+To ensure simplicity of implementation, Quasi is invoked with a simple command-line.
+
+~
+    quasi [-f] BASE_DIR INPUT_FILES...
+~
+
+The /BASE DIR/ argument specifies the directory that target files are created relative to -- if the /BASE DIR/ already exists, Quasi exits returning an error, unless the '-f' flag is passed as the first argument.
+After the /BASE DIR/, one or more input files are specified for parsing.
+
+..		Overview
+
+The following custom types are used:
+
+~c/main.c~
+typedef int bool;
+~
+
+The function declarations below show the overall structure of Quasi.
+First the arguments are processed (processArguments) and, if valid, the base directory is verified (canAccessBaseDirectory) and created, if needed.
+Each of the command-line arguments corresponding to the source files are then processed (processSourceFile).
+During processing, the output files are opened and closed (rejig) as necessary.
+Each time a target file is created the filename must be appropriately sanitised (generateSafeFilepath) and it must be determined whether to truncate the file or not (doWeTruncate).
+
+~c/main.c~
+int           processArguments( int argc, const char** argv );
+int         canAccessDirectory( const char* baseDir, int force );
+int         processSourceFiles( const char* baseDir, int first, int last, const char** files );
+int                processFile( const char* baseDir, const char* sourceFile );
+int    isPreformattedDelimiter( const char* line );
+FILE*                    rejig( FILE* out, const char* baseDir, const char* line );
+char*     generateSafeFilepath( const char* basedir, const char* line );
+int               doWeTruncate( const char* line );
+bool           isQuasiDownload( const char* line );
+void   downloadAndProcessQuasi( const char* basedir, const char* line );
+char*       createDownloadPath( const char* basedir );
+char*     createDependencyPath( const char* basedir );
+char*        downloadQuasiFile( const char* line );
+~
+
+If inappropriate arguments are passed, Quasi prints a usage message (usage) and exits with an error.
+Similarly, if the /base dir/ directory already exists, Quasi prints an error message (*errorDirectoryExists*) and exists with an error.
+
+~c/main.c~
+int                   usage();
+int    errorDirectoryExists();
+~
+
+The following utility functions are also used (these are described in the appendix).
+
+~c/main.c~
+int       createDirectories(       char* safeFilePath );
+int        directory_exists( const char* path );
+char*       parentDirectory( const char* filepath );
+void  printCurrentDirectory();
+char*              readline( FILE* stream );
+char*             stringCat( const char* aString, const char* separatorString, const char* anotherString );
+char*            stringCopy( const char* aString );
+int         stringHasPrefix( const char* aString, const char* prefix );
+int         stringHasSuffix( const char* aString, const char* suffix );
+char*            stringTrim( const char* aString );
+int          isAlphaNumeric( char ch );
+~
+
+During argument processing, the following global variables are initialised.
+/FORCE/ is initialised as true (1) if the '-f' flag was passed; FIRST is initialised to indicate the first source file argument in /argv/; and /BASE_DIR/ is initialised to the base directory argument.
+
+~c/main.c~
+int         FORCE;
+int         FIRST;
+const char* BASE_DIR;
+~
+
+The main function calls the appropriate functions as needed.
+
+~c/main.c~
+int main( int argc, const char** argv )
+{
+    int status = 0;
+
+    if ( processArguments( argc, argv ) )
+    {
+        if ( canAccessDirectory( BASE_DIR, FORCE ) )
+        {
+            int last = argc - 1;
+            status = processSourceFiles( BASE_DIR, FIRST, last, argv );
+        }
+        else
+        {
+            status = errorDirectoryExists();
+        }
+    }
+    else
+    {
+        status = usage();
+    }
+    return !status;
+}
+~
+
+..		Argument processing
+
+If the minimum expected number of arguments is supplied, the arguments are processed.
+If the force argument is supplied, the global variable /FORCE/ is set to true (1);
+then the global variable /BASE_DIR/ is initialised to the next argument.
+Finally, if there is at least one file argument remaining, the global variable /FIRST/ is initialised to identify it and the function returns true (1).
+
+~c/main.c~
+int processArguments( int argc, const char** argv )
+{
+    int status             = 0;
+    int expected_arguments = 3;
+    int i                  = 1;
+
+    if ( argc >= expected_arguments )
+    {
+        if ( 0 == strcmp( argv[i], "-f" ) )
+        {
+            expected_arguments++;
+            i++;
+            FORCE = 1;
+        }
+        BASE_DIR = argv[i]; i++;
+        FIRST    = i;
+        status   = ( argc >= expected_arguments );
+    }
+    return status;	
+}
+~
+
+
+..		Accessing the base directory
+
+First, an attempt is made to create the base directory.
+True (1) is returned if this succeeds, or if the directory already existed and /FORCE/ is true.
+Otherwise, the method returns false (0).
+
+~c/main.c~
+int canAccessDirectory( const char* baseDir, int force )
+{
+    int status = 0;
+
+    if ( 0 == mkdir( baseDir, 0755 ) )
+    {
+        status = 1;
+    }
+    else
+    {
+        switch ( errno )
+        {
+        case EEXIST:
+            status = force;
+            break;
+        }
+    }
+    return status;
+}
+~
+
+..		Processing the source files
+
+For each source file, the *processFile* function is called passing the /baseDir/ and the /source file/.
+
+~c/main.c~
+int processSourceFiles( const char* baseDir, int first, int last, const char** files )
+{
+    int status = 1;
+    int i;
+    for ( i=first; i <= last; i++ )
+    {
+        status &= processFile( baseDir, files[i] );
+    }
+    return status;
+}
+~
+
+...			Processing a file
+
+This procedure processes an individual source file.
+The file stream *in* is opened for the duration of the procedure, while the *out* file stream is only opened during the processing of a pre-formatted text block.
+
+The procedure reads lines from the *in* stream using the "readline" procedure.
+When a tilde (~) character is encountered, the system either opens, or closes, *out* by calling the "rejig" function, which rejigs the *out* stream.
+Each time a stream is closed a blank line is printed to the stream -- this allows the source to have spaces between chunks, while not having kludge whitespace in pre-formatted text blocks.
+
+When a tilde character doesn't start the line and the *out* stream is an open (not NULL) stream, the line is written out to the stream.
+
+If the /out/ file stream is not null when the loop exists it indicates that the previous pre-formatted block wasn't closed properly.
+This causes a warning message to be printed to /stderr/ and the function returns false (0).
+
+~c/main.c~
+int processFile( const char* baseDir, const char* sourceFile )
+{
+    int status = 0;
+    int in_bib = 0;
+
+    fprintf( stdout, "Processing: %s\n", sourceFile );
+
+    FILE* in = fopen( sourceFile, "r" );
+    if ( in )
+    {
+        FILE* out = NULL;
+
+        char* line;
+        while ( (line = readline( in )) )
+        {
+            if ( isPreformattedDelimiter( line ) )
+            {
+                if ( out )
+                {
+                    fprintf( out, "\n" );
+                }
+                out = rejig( out, baseDir, line );
+            }
+            else
+            if ( out )
+            {
+                fprintf( out, "%s", line );
+            }
+            else
+            if ( !in_bib && stringHasPrefix( line, "[" ) )
+            {
+                in_bib = 1;
+            }
+            else
+            if ( in_bib && isQuasiDownload( line ) )
+            {
+                downloadAndProcessQuasi( baseDir, line );
+            }
+        }
+        fclose( in );
+
+        if ( out )
+        {
+            fclose( out );
+            fprintf( stderr, "Warning: %s is unmatched '~'\n", sourceFile );
+        }
+        status = (out == NULL);
+    }
+
+    return status;
+}
+~
+
+...         Is preformatted delimiter
+
+A line is considered a delimiter for a section of pre-formatted text
+if it begins with either:
+a tilde character ('~') - the delimiter of MaxText formatted files;
+or a triplet of back-tick characters ("```") - the delimiter for Markdown files.
+
+~c/main.c~
+int isPreformattedDelimiter( const char* line )
+{
+    switch( line[0] )
+    {
+    case '~':
+        return 1;
+
+    default:
+        return stringHasPrefix( line, "```" );
+    }
+}
+~
+
+...			Rejig file output
+
+This function closes /out/, then if the passed line contains a valid file name, opens and returns a new file stream.
+First, if "generateSafeFilepath" indicates a valid file name, any necessary directories are created, then the file is either opened or created.
+If "doWeTruncate" returns true, the file is truncated on open.
+
+~c/main.c~
+FILE* rejig( FILE* out, const char* basedir, const char* line )
+{
+    FILE* ret = NULL;
+
+    if ( out ) fclose( out );
+
+    char* safeFilePath = generateSafeFilepath( basedir, line );
+    if ( safeFilePath && createDirectories( parentDirectory( safeFilePath ) ) )
+    {
+        if ( doWeTruncate( line ) )
+        {
+            ret = fopen( safeFilePath, "w" );
+        }
+        else
+        {
+            ret = fopen( safeFilePath, "a" );
+        }
+    }
+    free( safeFilePath );
+
+    return ret;
+}
+~
+
+...			Generation of the safe filepath
+
+The "generateSafeFilepath" procedure attempts to produce a safe file path by combining the passed base-dir with a file path extracted from the passed line.
+The passed line starts with a tilde character but may have anything else as well.
+
+First, the line is checked to make sure it doesn't include '..', which could potentially reference a directory above the /base dir/.
+Next, the line is checked to ensure it includes a period, '.', either indicating a relative directory path, or the beginning of a file type suffix -- this is to avoid MaxText pre-formatted text tags.
+Then, 'strtok' is used to tokenise the line using the tilde as a delimiter.
+The first token returned is treated as the filepath -- first it is checked to make sure it is alpha-numerical chacter (indicating an appropraite filename),
+then strtok is called again to verify that the token is trailed by another tilde if the file is in MaxText format.
+Note, Markdown pre-formatted delimiters do not have a trailing delimiter,
+therefore, when parsing Markdown files, the newline character is also passed as a delimiter.
+
+If there are any problems NULL is returned.
+
+~c/main.c~
+typedef enum _Format { MARKDOWN, MAXTEXT } Format;
+
+char* generateSafeFilepath( const char* basedir, const char* line )
+{
+    char* full = NULL;
+    int   last = 0;
+
+    Format format = ('~' == line[0]) ? MAXTEXT : MARKDOWN;
+
+    int len = strlen( basedir ) + strlen( line ) + 1;
+    if ( NULL == strstr( line, ".." ) )
+    {
+        if ( NULL != strstr( line, "." ) )
+        {
+            char* test  = stringCopy( line );	
+            char* token = ('~' == line[0]) ? strtok( test, "~" ) : strtok( test, "`\n" );
+
+            if ( token && ('!' == token[0]) ) token++;
+
+            if ( token && isAlphaNumeric( token[0] ) )
+            {
+                full = calloc( len, sizeof( char ) );
+                strcpy( full, basedir );
+                strcat( full, "/" );
+                strcat( full, token );
+
+                switch ( format )
+                {
+                case MARKDOWN:
+                    // Markdown does not require end delimiter,
+                    // which seems to cause a trailing '?' to be added to the token...
+                    last = strlen( full ) - 2;
+
+                    if ( '?' == full[last] )
+                    {
+                        full[last] = '\0';
+                    }
+                    break;
+
+                case MAXTEXT:
+                    if ( NULL == strtok( NULL, "~" ) )
+                    {
+                        free( full );
+                        full = NULL;
+                    }
+                    break;
+                }
+            }
+            free( test );
+        }
+    }
+
+
+
+    return full;
+}
+~
+
+...			Truncation
+
+The output file is truncated on open if the source file name is proceeded by an exclamation mark.
+
+~c/main.c~
+int doWeTruncate( const char* line )
+{
+    int truncate = 0;
+
+    switch( line[0] )
+    {
+    case '~':
+        if ( 2 < strlen( line ) )
+        {
+            truncate = ('!' == line[1]);
+        }
+        break;
+
+    case '`':
+        if ( 4 < strlen( line ) )
+        {
+            truncate = ('!' == line[3]);
+        }
+        break;
+    }
+    return truncate;
+}
+~
+
+... Is Quasi Download
+
+~c/main.c~
+bool isQuasiDownload( const char* line )
+{
+    bool is_download = 0;
+
+    char* trimmed = stringTrim( line );
+    {
+        is_download = stringHasPrefix( trimmed, "http" ) && stringHasSuffix( trimmed, ".txt" );
+    }
+    free( trimmed );
+
+    if ( is_download )
+        fprintf( stderr, "-- [%s]\n", trimmed );
+
+    return is_download;
+}
+~
+
+... Download and Process Quasi
+
+~c/main.c~
+void downloadAndProcessQuasi( const char* basedir, const char* line )
+{
+    char* current = getcwd( NULL, 0 );
+    {
+        if ( !createDirectories( createDownloadPath( basedir ) ) )
+        {
+            fprintf( stderr, "!! [%s]\n", "Could not create downloads directory." );
+        }
+        else
+        if ( !createDirectories( createDependencyPath( basedir ) ) )
+        {
+            fprintf( stderr, "!! [%s]\n", "Could not create dependency directory." );
+        }
+        else
+        {
+            char* download_path = createDownloadPath( basedir );
+
+            if ( chdir( download_path ) )
+            {
+                perror( "Could not change to downloads directory." );
+                fprintf( stderr, "!! [%s]\n", download_path );
+                exit( -1 );
+            }
+            else
+            {
+                char* dependency_path    = createDependencyPath( basedir );
+                char* download_file_path = downloadQuasiFile( line );
+
+                //
+                //  Crucial to return to original working directory
+                //  before calling 'processFile'.
+                //
+
+                if ( chdir( current ) )
+                {
+                    perror( "Could not change back to original directory." );
+                    exit( -1 );
+                }
+
+                processFile( dependency_path, download_file_path );
+
+                free( dependency_path    );
+                free( download_file_path );
+            }
+            free( download_path );
+        }
+    }
+
+    free( current );
+}
+~
+
+... Create Download Path
+
+~c/main.c~
+char* createDownloadPath( const char* basedir )
+{
+    const char* downloads_dir = "_downloads";
+
+    return stringCat( basedir, "/", downloads_dir );
+}
+~
+
+... Create Dependency Path
+
+~c/main.c~
+char* createDependencyPath( const char* basedir )
+{
+    const char* dependency_dir = "_dep";
+
+    return stringCat( basedir, "/", dependency_dir );
+}
+~
+
+... Download Quasi File
+
+~c/main.c~
+char* downloadQuasiFile( const char* line )
+{
+    char* download_file_path = 0;
+    {
+        char* current  = getcwd    ( NULL,             0 );
+        char* url      = stringTrim( line                );
+        char* command1 = stringCat ( "wget",    " ", url );
+        char* command2 = stringCat ( "curl -O", " ", url );
+        {
+            if ( system( command1 ) && system( command2 ) )
+            {
+                fprintf( stderr, "!! [%s]\n", "Could not call wget or curl" );
+            }
+            else
+            {
+                download_file_path = stringCat( current, "/", basename( url ) );
+            }
+        }
+        free( current  );
+        free( url      );
+        free( command1 );
+        free( command2 );
+    }
+    return download_file_path;
+}
+~
+
+..		Error messages
+
+...			Incorrect arguments
+
+If the program is invoked without the appropriate arguments the following usage message is printed to /stderr/.
+~
+Usage:
+    quasi [-f] BASE_DIR INPUT_FILES
+~
+
+~c/main.c~
+int usage()
+{
+    const char* ch = "Usage:\n\t quasi [-f] BASE_DIR INPUT_FILES";
+    fprintf( stderr, "%s\n", ch );
+    return 0;
+}
+~
+
+...			Directory already exists
+
+If the force ('-f') flag hasn't been passed, and the base directory already exists, the following error message is printed to /stderr/.
+~
+    Error: directory already exists, or cannot be created!
+~
+
+~c/main.c~
+int errorDirectoryExists()
+{
+    const char* ch = "Error: directory already exists, or cannot be created!";
+    fprintf( stderr, "%s\n", ch );
+    return 0;
+}
+~
